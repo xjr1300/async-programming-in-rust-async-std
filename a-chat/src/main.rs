@@ -1,7 +1,9 @@
 use std::collections::hash_map::{Entry, HashMap};
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
+use async_listen::{error_hint, ListenExt};
 use async_std::io::BufReader;
 use async_std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use async_std::prelude::*;
@@ -25,9 +27,11 @@ async fn accept_loop(addr: impl ToSocketAddrs) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let (broker_sender, broker_receiver) = mpsc::unbounded();
     let broker_handle = task::spawn(broker_loop(broker_receiver));
-    let mut incoming = listener.incoming();
+    let mut incoming = listener
+        .incoming()
+        .log_warnings(log_accept_error)
+        .handle_errors(Duration::from_millis(500));
     while let Some(stream) = incoming.next().await {
-        let stream = stream?;
         println!("Accepting from: {}", stream.peer_addr()?);
         spawn_and_log_error(connection_loop(broker_sender.clone(), stream));
     }
@@ -35,6 +39,10 @@ async fn accept_loop(addr: impl ToSocketAddrs) -> Result<()> {
     broker_handle.await;
 
     Ok(())
+}
+
+fn log_accept_error(e: &std::io::Error) {
+    eprintln!("Error: {}. Listener paused for 0.5s. {}", e, error_hint(e))
 }
 
 async fn connection_loop(mut broker: Sender<Event>, stream: TcpStream) -> Result<()> {
